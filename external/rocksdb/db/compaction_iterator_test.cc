@@ -19,15 +19,15 @@ namespace rocksdb {
 // Expects no merging attempts.
 class NoMergingMergeOp : public MergeOperator {
  public:
-  bool FullMergeV2(const MergeOperationInput& merge_in,
-                   MergeOperationOutput* merge_out) const override {
+  bool FullMergeV2(const MergeOperationInput& /*merge_in*/,
+                   MergeOperationOutput* /*merge_out*/) const override {
     ADD_FAILURE();
     return false;
   }
-  bool PartialMergeMulti(const Slice& key,
-                         const std::deque<Slice>& operand_list,
-                         std::string* new_value,
-                         Logger* logger) const override {
+  bool PartialMergeMulti(const Slice& /*key*/,
+                         const std::deque<Slice>& /*operand_list*/,
+                         std::string* /*new_value*/,
+                         Logger* /*logger*/) const override {
     ADD_FAILURE();
     return false;
   }
@@ -126,7 +126,7 @@ class LoggingForwardVectorIterator : public InternalIterator {
                keys_.begin();
   }
 
-  virtual void SeekForPrev(const Slice& target) override { assert(false); }
+  virtual void SeekForPrev(const Slice& /*target*/) override { assert(false); }
 
   virtual void Next() override {
     assert(Valid());
@@ -158,9 +158,12 @@ class FakeCompaction : public CompactionIterator::CompactionProxy {
  public:
   FakeCompaction() = default;
 
-  virtual int level(size_t compaction_input_level) const override { return 0; }
+  virtual int level(size_t /*compaction_input_level*/) const override {
+    return 0;
+  }
   virtual bool KeyNotExistsBeyondOutputLevel(
-      const Slice& user_key, std::vector<size_t>* level_ptrs) const override {
+      const Slice& /*user_key*/,
+      std::vector<size_t>* /*level_ptrs*/) const override {
     return is_bottommost_level || key_not_exists_beyond_output_level;
   }
   virtual bool bottommost_level() const override { return is_bottommost_level; }
@@ -244,8 +247,8 @@ class CompactionIteratorTest : public testing::TestWithParam<bool> {
     c_iter_.reset(new CompactionIterator(
         iter_.get(), cmp_, merge_helper_.get(), last_sequence, &snapshots_,
         earliest_write_conflict_snapshot, snapshot_checker_.get(),
-        Env::Default(), false, range_del_agg_.get(), std::move(compaction),
-        filter, nullptr, &shutting_down_));
+        Env::Default(), false /* report_detailed_time */, false,
+        range_del_agg_.get(), std::move(compaction), filter, &shutting_down_));
   }
 
   void AddSnapshot(SequenceNumber snapshot,
@@ -365,9 +368,9 @@ TEST_P(CompactionIteratorTest, RangeDeletionWithSnapshots) {
 
 TEST_P(CompactionIteratorTest, CompactionFilterSkipUntil) {
   class Filter : public CompactionFilter {
-    virtual Decision FilterV2(int level, const Slice& key, ValueType t,
+    virtual Decision FilterV2(int /*level*/, const Slice& key, ValueType t,
                               const Slice& existing_value,
-                              std::string* new_value,
+                              std::string* /*new_value*/,
                               std::string* skip_until) const override {
       std::string k = key.ToString();
       std::string v = existing_value.ToString();
@@ -548,10 +551,10 @@ TEST_P(CompactionIteratorTest, ShuttingDownInMerge) {
 
 TEST_P(CompactionIteratorTest, SingleMergeOperand) {
   class Filter : public CompactionFilter {
-    virtual Decision FilterV2(int level, const Slice& key, ValueType t,
+    virtual Decision FilterV2(int /*level*/, const Slice& key, ValueType t,
                               const Slice& existing_value,
-                              std::string* new_value,
-                              std::string* skip_until) const override {
+                              std::string* /*new_value*/,
+                              std::string* /*skip_until*/) const override {
       std::string k = key.ToString();
       std::string v = existing_value.ToString();
 
@@ -602,7 +605,7 @@ TEST_P(CompactionIteratorTest, SingleMergeOperand) {
     bool PartialMergeMulti(const Slice& key,
                            const std::deque<Slice>& operand_list,
                            std::string* new_value,
-                           Logger* logger) const override {
+                           Logger* /*logger*/) const override {
       std::string string_key = key.ToString();
       EXPECT_TRUE(string_key == "a" || string_key == "b");
 
@@ -668,8 +671,12 @@ TEST_P(CompactionIteratorTest, ZeroOutSequenceAtBottomLevel) {
 TEST_P(CompactionIteratorTest, RemoveDeletionAtBottomLevel) {
   AddSnapshot(1);
   RunTest({test::KeyStr("a", 1, kTypeDeletion),
-           test::KeyStr("b", 2, kTypeDeletion)},
-          {"", ""}, {test::KeyStr("b", 2, kTypeDeletion)}, {""},
+           test::KeyStr("b", 3, kTypeDeletion),
+           test::KeyStr("b", 1, kTypeValue)},
+          {"", "", ""},
+          {test::KeyStr("b", 3, kTypeDeletion),
+           test::KeyStr("b", 0, kTypeValue)},
+          {"", ""},
           kMaxSequenceNumber /*last_commited_seq*/, nullptr /*merge_operator*/,
           nullptr /*compaction_filter*/, true /*bottommost_level*/);
 }
@@ -838,9 +845,22 @@ TEST_F(CompactionIteratorWithSnapshotCheckerTest,
       {test::KeyStr("a", 1, kTypeDeletion), test::KeyStr("b", 2, kTypeDeletion),
        test::KeyStr("c", 3, kTypeDeletion)},
       {"", "", ""},
-      {test::KeyStr("b", 2, kTypeDeletion),
-       test::KeyStr("c", 3, kTypeDeletion)},
+      {},
       {"", ""}, kMaxSequenceNumber /*last_commited_seq*/,
+      nullptr /*merge_operator*/, nullptr /*compaction_filter*/,
+      true /*bottommost_level*/);
+}
+
+TEST_F(CompactionIteratorWithSnapshotCheckerTest,
+       NotRemoveDeletionIfValuePresentToEarlierSnapshot) {
+  AddSnapshot(2,1);
+  RunTest(
+      {test::KeyStr("a", 4, kTypeDeletion), test::KeyStr("a", 1, kTypeValue),
+          test::KeyStr("b", 3, kTypeValue)},
+      {"", "", ""},
+      {test::KeyStr("a", 4, kTypeDeletion), test::KeyStr("a", 0, kTypeValue),
+            test::KeyStr("b", 3, kTypeValue)},
+      {"", "", ""}, kMaxSequenceNumber /*last_commited_seq*/,
       nullptr /*merge_operator*/, nullptr /*compaction_filter*/,
       true /*bottommost_level*/);
 }

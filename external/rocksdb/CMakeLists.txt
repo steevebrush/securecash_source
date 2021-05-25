@@ -16,7 +16,7 @@
 #    See thirdparty.inc for more information.
 #        sample command: cmake -G "Visual Studio 15 Win64" -DWITH_GFLAGS=1 -DWITH_SNAPPY=1 -DWITH_JEMALLOC=1 -DWITH_JNI=1 ..
 # 4. Then build the project in debug mode (you may want to add /m[:<N>] flag to run msbuild in <N> parallel threads
-#                                          or simply /m ot use all avail cores)
+#                                          or simply /m to use all avail cores)
 #        msbuild rocksdb.sln
 #
 #        rocksdb.sln build features exclusions of test only code in Release. If you build ALL_BUILD then everything
@@ -32,11 +32,15 @@
 # 3. cmake ..
 # 4. make -j
 
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.5)
 project(rocksdb)
 enable_language(CXX)
 enable_language(C)
 enable_language(ASM)
+
+if(POLICY CMP0048)
+  cmake_policy(SET CMP0048 NEW)
+endif()
 
 if(POLICY CMP0042)
   cmake_policy(SET CMP0042 NEW)
@@ -48,6 +52,18 @@ option(WITH_JEMALLOC "build with JeMalloc" OFF)
 option(WITH_SNAPPY "build with SNAPPY" OFF)
 option(WITH_LZ4 "build with lz4" OFF)
 option(WITH_ZLIB "build with zlib" OFF)
+option(WITH_ZSTD "build with zstd" OFF)
+#option(WITH_RTTI "build with rtti" OFF)
+
+option(WITH_LEAF_FRAME "build with leaf frame detection" ON)
+option(WITH_SSE42 "build with sse42 detection (break universal cpu)" ON)
+option(WITH_THREAD_LOCAL "build with thread local detection" ON)
+option(WITH_SYNC_FILE_RANGE_WRITE "build with file range write detection" ON)
+option(WITH_PTHREAD_MUTEX_ADAPTIVE_NP "build with pthread mutex" ON)
+option(WITH_MALLOC_USABLE_SIZE "build with malloc usable size" ON)
+option(WITH_MALLOC_GETCPU "build with malloc getcpu" ON)
+option(WITH_AVX "build with avx detection" ON)
+
 if(MSVC)
   # Defaults currently different for GFLAGS.
   #  We will address find_package work a little later
@@ -56,7 +72,7 @@ if(MSVC)
   include(${CMAKE_CURRENT_SOURCE_DIR}/thirdparty.inc)
 else()
   if(CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
-    # FreeBSD has jemaloc as default malloc
+    # FreeBSD has jemalloc as default malloc
     # but it does not have all the jemalloc files in include/...
     set(WITH_JEMALLOC ON)
   else()
@@ -64,11 +80,12 @@ else()
       find_package(JeMalloc REQUIRED)
       add_definitions(-DROCKSDB_JEMALLOC -DJEMALLOC_NO_DEMANGLE)
       include_directories(${JEMALLOC_INCLUDE_DIR})
+      list(APPEND THIRDPARTY_LIBS ${JEMALLOC_LIBRARIES})
     endif()
   endif()
-  
+
   # No config file for this
-  option(WITH_GFLAGS "build with GFlags" ON)
+  option(WITH_GFLAGS "build with GFlags" OFF)
   if(WITH_GFLAGS)
     find_package(gflags)
     if(gflags_FOUND)
@@ -107,7 +124,6 @@ else()
     list(APPEND THIRDPARTY_LIBS ${LZ4_LIBRARIES})
   endif()
 
-  option(WITH_ZSTD "build with zstd" OFF)
   if(WITH_ZSTD)
     find_package(zstd REQUIRED)
     add_definitions(-DZSTD)
@@ -132,21 +148,19 @@ endif()
 
 string(REGEX REPLACE "[^0-9a-f]+" "" GIT_SHA "${GIT_SHA}")
 
-set(SH_CMD "sh")
-execute_process(COMMAND
-  ${SH_CMD} -c "build_tools/version.sh full"
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-  OUTPUT_VARIABLE ROCKSDB_VERSION
-)
-string(STRIP "${ROCKSDB_VERSION}" ROCKSDB_VERSION)
-execute_process(COMMAND
-  ${SH_CMD} -c "build_tools/version.sh major"
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-  OUTPUT_VARIABLE ROCKSDB_VERSION_MAJOR
-)
-string(STRIP "${ROCKSDB_VERSION_MAJOR}" ROCKSDB_VERSION_MAJOR)
 
-option(WITH_MD_LIBRARY "build with MD" ON)
+# Read rocksdb version from version.h header file.
+file(READ include/rocksdb/version.h version_header_file)
+string(REGEX MATCH "#define ROCKSDB_MAJOR ([0-9]+)" _ ${version_header_file})
+set(ROCKSDB_VERSION_MAJOR ${CMAKE_MATCH_1})
+string(REGEX MATCH "#define ROCKSDB_MINOR ([0-9]+)" _ ${version_header_file})
+set(ROCKSDB_VERSION_MINOR ${CMAKE_MATCH_1})
+string(REGEX MATCH "#define ROCKSDB_PATCH ([0-9]+)" _ ${version_header_file})
+set(ROCKSDB_VERSION_PATCH ${CMAKE_MATCH_1})
+set(ROCKSDB_VERSION ${ROCKSDB_VERSION_MAJOR}.${ROCKSDB_VERSION_MINOR}.${ROCKSDB_VERSION_PATCH})
+
+
+option(WITH_MD_LIBRARY "build with MD" OFF)
 if(WIN32 AND MSVC)
   if(WITH_MD_LIBRARY)
     set(RUNTIME_LIBRARY "MD")
@@ -161,19 +175,19 @@ add_library(build_version OBJECT ${BUILD_VERSION_CC})
 target_include_directories(build_version PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/util)
 if(MSVC)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zi /nologo /EHsc /GS /Gd /GR /GF /fp:precise /Zc:wchar_t /Zc:forScope /errorReport:queue")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FC /d2Zi+ /W4 /wd4127 /wd4800 /wd4996 /wd4351 /wd4100 /wd4204 /wd4324")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zi /nologo /EHsc /GS- /Gd /GR /GF /fp:precise /Zc:wchar_t /Zc:forScope /errorReport:queue")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FC /d2Zi+ /W3 /wd4127 /wd4800 /wd4996 /wd4351 /wd4100 /wd4204 /wd4324")
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -W -Wextra -Wall")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wsign-compare -Wshadow -Wno-unused-parameter -Wno-unused-variable -Woverloaded-virtual -Wnon-virtual-dtor -Wno-missing-field-initializers -Wno-strict-aliasing")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wsign-compare -Wno-shadow -Wno-defaulted-function-deleted -Wno-range-loop-construct -Wno-deprecated-copy -Wno-unused-parameter -Wno-unused-variable -Woverloaded-virtual -Wnon-virtual-dtor -Wno-missing-field-initializers -Wno-strict-aliasing -Wno-undef")
   if(MINGW)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-format")
   endif()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
   if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -fno-omit-frame-pointer")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer")
     include(CheckCXXCompilerFlag)
-    if(ENABLE_LEAF_FRAME)
+    if(WITH_LEAF_FRAME)
       CHECK_CXX_COMPILER_FLAG("-momit-leaf-frame-pointer" HAVE_OMIT_LEAF_FRAME_POINTER)
       if(HAVE_OMIT_LEAF_FRAME_POINTER)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -momit-leaf-frame-pointer")
@@ -194,7 +208,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "ppc64le")
   endif(HAS_ALTIVEC)
 endif(CMAKE_SYSTEM_PROCESSOR MATCHES "ppc64le")
 
-option(PORTABLE "build a portable binary" OFF)
+option(PORTABLE "build a portable binary" ON)
 option(FORCE_SSE42 "force building with SSE4.2, even when PORTABLE=ON" OFF)
 if(PORTABLE)
   # MSVC does not need a separate compiler flag to enable SSE4.2; if nmmintrin.h
@@ -213,7 +227,7 @@ else()
 endif()
 
 include(CheckCXXSourceCompiles)
-if(ENABLE_SSE42)
+if(WITH_SSE42)
   if(NOT MSVC)
     set(CMAKE_REQUIRED_FLAGS "-msse4.2 -mpclmul")
   endif()
@@ -232,12 +246,13 @@ if(ENABLE_SSE42)
   unset(CMAKE_REQUIRED_FLAGS)
   if(HAVE_SSE42)
     add_definitions(-DHAVE_SSE42)
+    add_definitions(-DHAVE_PCLMUL)
   elseif(FORCE_SSE42)
     message(FATAL_ERROR "FORCE_SSE42=ON but unable to compile with SSE4.2 enabled")
   endif()
 endif()
 
-if(ENABLE_THREAD_LOCAL)
+if(WITH_THREAD_LOCAL)
   CHECK_CXX_SOURCE_COMPILES("
   #if defined(_MSC_VER) && !defined(__thread)
   #define __thread __declspec(thread)
@@ -251,7 +266,7 @@ if(ENABLE_THREAD_LOCAL)
   endif()
 endif()
 
-option(FAIL_ON_WARNINGS "Treat compile warnings as errors" ON)
+option(FAIL_ON_WARNINGS "Treat compile warnings as errors" OFF)
 if(FAIL_ON_WARNINGS)
   if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /WX")
@@ -291,50 +306,77 @@ if(WITH_UBSAN)
   endif()
 endif()
 
-option(WITH_NUMA "build with NUMA" OFF)
+option(WITH_NUMA "build with NUMA policy support" OFF)
 if(WITH_NUMA)
-  find_package(NUMA)
-  if(NUMA_FOUND)
-    add_definitions(-DNUMA)
-    include_directories(${NUMA_INCLUDE_DIR})
-    list(APPEND THIRDPARTY_LIBS ${NUMA_LIBRARIES})
-  endif()
+  find_package(NUMA REQUIRED)
+  add_definitions(-DNUMA)
+  include_directories(${NUMA_INCLUDE_DIR})
+  list(APPEND THIRDPARTY_LIBS ${NUMA_LIBRARIES})
 endif()
 
-option(WITH_TBB "build with TBB" OFF)
+option(WITH_TBB "build with Threading Building Blocks (TBB)" OFF)
 if(WITH_TBB)
-  find_package(TBB)
-  if(TBB_FOUND)
-    add_definitions(-DTBB)
-    include_directories(${TBB_INCLUDE_DIR})
-    list(APPEND THIRDPARTY_LIBS ${TBB_LIBRARIES})
-  endif()
+  find_package(TBB REQUIRED)
+  add_definitions(-DTBB)
+  include_directories(${TBB_INCLUDE_DIR})
+  list(APPEND THIRDPARTY_LIBS ${TBB_LIBRARIES})
 endif()
+
+# Stall notifications eat some performance from inserts
+option(DISABLE_STALL_NOTIF "Build with stall notifications" OFF)
+if(DISABLE_STALL_NOTIF)
+  add_definitions(-DROCKSDB_DISABLE_STALL_NOTIFICATION)
+endif()
+
+
+#if(DEFINED WITH_RTTI)
+#  if(WITH_RTTI)
+#    message(STATUS "Enabling RTTI")
+#    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DROCKSDB_USE_RTTI")
+#    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DROCKSDB_USE_RTTI")
+#  else()
+#    if(MSVC)
+#      message(STATUS "Disabling RTTI in Release builds. Always on in Debug.")
+#      set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DROCKSDB_USE_RTTI")
+#      set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /GR-")
+#    else()
+#      message(STATUS "Disabling RTTI in Release builds")
+##      set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fno-rtti")
+##      set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fno-rtti")
+#    endif()
+#  endif()
+#else()
+#  message(STATUS "Enabling RTTI in Debug builds only (default)")
+#  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DROCKSDB_USE_RTTI")
+#  if(MSVC)
+#     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /GR-")
+##  else()
+##    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fno-rtti")
+#  endif()
+#endif()
 
 # Used to run CI build and tests so we can run faster
-set(OPTIMIZE_DEBUG_DEFAULT 0)        # Debug build is unoptimized by default use -DOPTDBG=1 to optimize
-
-if(DEFINED OPTDBG)
-   set(OPTIMIZE_DEBUG ${OPTDBG})
-else()
-   set(OPTIMIZE_DEBUG ${OPTIMIZE_DEBUG_DEFAULT})
-endif()
-
+option(OPTDBG "Build optimized debug build with MSVC" OFF)
 if(MSVC)
-  if((${OPTIMIZE_DEBUG} EQUAL 1))
+  if(OPTDBG)
     message(STATUS "Debug optimization is enabled")
-    set(CMAKE_CXX_FLAGS_DEBUG "/Oxt /${RUNTIME_LIBRARY}d")
+    set(CMAKE_CXX_FLAGS_DEBUG "/Oxt")
   else()
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Od /RTC1 /Gm /${RUNTIME_LIBRARY}d")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Od /RTC1")
   endif()
-  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Oxt /Zp8 /Gm- /Gy /${RUNTIME_LIBRARY}")
+  if(WITH_RUNTIME_DEBUG)
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /${RUNTIME_LIBRARY}d")
+  else()
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /${RUNTIME_LIBRARY}")
+  endif()
+  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Oxt /Zp8 /Gy /${RUNTIME_LIBRARY}")
 
   set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /DEBUG")
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /DEBUG")
 endif()
 
-if(CMAKE_COMPILER_IS_GNUCXX)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-builtin-memcmp")
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND CMAKE_COMPILER_IS_GNUCXX)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Ofast")
 endif()
 
 option(ROCKSDB_LITE "Build RocksDBLite version" OFF)
@@ -350,7 +392,7 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
   if(CMAKE_SYSTEM_PROCESSOR MATCHES arm)
     add_definitions(-DIOS_CROSS_COMPILE -DROCKSDB_LITE)
     # no debug info for IOS, that will make our library big
-    add_definitions(-DNDEBUG)
+#    add_definitions(-DNDEBUG)
   endif()
 elseif(CMAKE_SYSTEM_NAME MATCHES "Linux")
   add_definitions(-DOS_LINUX)
@@ -392,7 +434,7 @@ int main() {
   endif()
 endif()
 
-if(ENABLE_SYNC_FILE_RANGE_WRITE)
+if(WITH_SYNC_FILE_RANGE_WRITE)
   CHECK_CXX_SOURCE_COMPILES("
   #include <fcntl.h>
   int main() {
@@ -405,7 +447,7 @@ if(ENABLE_SYNC_FILE_RANGE_WRITE)
   endif()
 endif()
 
-if(ENABLE_PTHREAD_MUTEX_ADAPTIVE_NP)
+if(WITH_PTHREAD_MUTEX_ADAPTIVE_NP)
   CHECK_CXX_SOURCE_COMPILES("
   #include <pthread.h>
   int main() {
@@ -418,14 +460,14 @@ if(ENABLE_PTHREAD_MUTEX_ADAPTIVE_NP)
 endif()
 
 include(CheckCXXSymbolExists)
-if(ENABLE_MALLOC_USABLE_SIZE)
+if(WITH_MALLOC_USABLE_SIZE)
   check_cxx_symbol_exists(malloc_usable_size malloc.h HAVE_MALLOC_USABLE_SIZE)
   if(HAVE_MALLOC_USABLE_SIZE)
     add_definitions(-DROCKSDB_MALLOC_USABLE_SIZE)
   endif()
 endif()
 
-if(ENABLE_SCHED_GETCPU)
+if(WITH_SCHED_GETCPU)
   check_cxx_symbol_exists(sched_getcpu sched.h HAVE_SCHED_GETCPU)
   if(HAVE_SCHED_GETCPU)
     add_definitions(-DROCKSDB_SCHED_GETCPU_PRESENT)
@@ -467,6 +509,7 @@ set(SOURCES
         db/db_info_dumper.cc
         db/db_iter.cc
         db/dbformat.cc
+        db/error_handler.cc
         db/event_helpers.cc
         db/experimental.cc
         db/external_sst_file_ingestion_job.cc
@@ -475,10 +518,10 @@ set(SOURCES
         db/flush_scheduler.cc
         db/forward_iterator.cc
         db/internal_stats.cc
+        db/logs_with_prep_tracker.cc
         db/log_reader.cc
         db/log_writer.cc
         db/malloc_stats.cc
-        db/managed_iterator.cc
         db/memtable.cc
         db/memtable_list.cc
         db/merge_helper.cc
@@ -540,6 +583,8 @@ set(SOURCES
         table/cuckoo_table_builder.cc
         table/cuckoo_table_factory.cc
         table/cuckoo_table_reader.cc
+        table/data_block_hash_index.cc
+        table/data_block_footer.cc
         table/flush_block_policy.cc
         table/format.cc
         table/full_filter_block.cc
@@ -563,12 +608,14 @@ set(SOURCES
         tools/ldb_cmd.cc
         tools/ldb_tool.cc
         tools/sst_dump_tool.cc
+        tools/trace_analyzer_tool.cc
         util/arena.cc
         util/auto_roll_logger.cc
         util/bloom.cc
         util/coding.cc
         util/compaction_job_stats_impl.cc
         util/comparator.cc
+        util/compression_context_cache.cc
         util/concurrent_arena.cc
         util/crc32c.cc
         util/delete_scheduler.cc
@@ -586,23 +633,25 @@ set(SOURCES
         util/slice.cc
         util/sst_file_manager_impl.cc
         util/status.cc
-        util/status_message.cc
         util/string_util.cc
         util/sync_point.cc
+        util/sync_point_impl.cc
         util/testutil.cc
         util/thread_local.cc
         util/threadpool_imp.cc
+        util/trace_replay.cc
         util/transaction_test_util.cc
         util/xxhash.cc
         utilities/backupable/backupable_db.cc
+        utilities/blob_db/blob_compaction_filter.cc
         utilities/blob_db/blob_db.cc
         utilities/blob_db/blob_db_impl.cc
+        utilities/blob_db/blob_db_impl_filesnapshot.cc
         utilities/blob_db/blob_dump_tool.cc
         utilities/blob_db/blob_file.cc
         utilities/blob_db/blob_log_reader.cc
         utilities/blob_db/blob_log_writer.cc
         utilities/blob_db/blob_log_format.cc
-        utilities/blob_db/ttl_extractor.cc
         utilities/cassandra/cassandra_compaction_filter.cc
         utilities/cassandra/format.cc
         utilities/cassandra/merge_operator.cc
@@ -639,6 +688,7 @@ set(SOURCES
         utilities/simulator_cache/sim_cache.cc
         utilities/spatialdb/spatial_db.cc
         utilities/table_properties_collectors/compact_on_deletion_collector.cc
+        utilities/trace/file_trace_reader_writer.cc
         utilities/transactions/optimistic_transaction_db_impl.cc
         utilities/transactions/optimistic_transaction.cc
         utilities/transactions/pessimistic_transaction.cc
@@ -650,6 +700,8 @@ set(SOURCES
         utilities/transactions/transaction_util.cc
         utilities/transactions/write_prepared_txn.cc
         utilities/transactions/write_prepared_txn_db.cc
+        utilities/transactions/write_unprepared_txn.cc
+        utilities/transactions/write_unprepared_txn_db.cc
         utilities/ttl/db_ttl_impl.cc
         utilities/write_batch_with_index/write_batch_with_index.cc
         utilities/write_batch_with_index/write_batch_with_index_internal.cc
@@ -676,8 +728,12 @@ if(WIN32)
     port/win/env_default.cc
     port/win/port_win.cc
     port/win/win_logger.cc
-    port/win/win_thread.cc
+    port/win/win_thread.cc)
+
+if(WITH_XPRESS)
+  list(APPEND SOURCES
     port/win/xpress_win.cc)
+endif()
 
 if(WITH_JEMALLOC)
   list(APPEND SOURCES
@@ -694,6 +750,14 @@ endif()
 set(ROCKSDB_STATIC_LIB rocksdb${ARTIFACT_SUFFIX})
 set(ROCKSDB_SHARED_LIB rocksdb-shared${ARTIFACT_SUFFIX})
 set(ROCKSDB_IMPORT_LIB ${ROCKSDB_SHARED_LIB})
+
+option(WITH_LIBRADOS "Build with librados" OFF)
+if(WITH_LIBRADOS)
+  list(APPEND SOURCES
+    utilities/env_librados.cc)
+  list(APPEND THIRDPARTY_LIBS rados)
+endif()
+
 if(WIN32)
   set(SYSTEM_LIBS ${SYSTEM_LIBS} Shlwapi.lib Rpcrt4.lib)
   set(LIBS ${ROCKSDB_STATIC_LIB} ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
@@ -710,13 +774,6 @@ else()
                         SOVERSION ${ROCKSDB_VERSION_MAJOR}
                         CXX_STANDARD 11
                         OUTPUT_NAME "rocksdb")
-endif()
-
-option(WITH_LIBRADOS "Build with librados" OFF)
-if(WITH_LIBRADOS)
-  list(APPEND SOURCES
-    utilities/env_librados.cc)
-  list(APPEND THIRDPARTY_LIBS rados)
 endif()
 
 add_library(${ROCKSDB_STATIC_LIB} STATIC ${SOURCES})
@@ -808,7 +865,7 @@ if(NOT WIN32 OR ROCKSDB_INSTALL_ON_WINDOWS)
   )
 endif()
 
-option(WITH_TESTS "build with tests" ON)
+option(WITH_TESTS "build with tests" OFF)
 if(WITH_TESTS)
   set(TESTS
         cache/cache_test.cc
@@ -833,6 +890,7 @@ if(WITH_TESTS)
         db/db_inplace_update_test.cc
         db/db_io_failure_test.cc
         db/db_iter_test.cc
+        db/db_iter_stress_test.cc
         db/db_iterator_test.cc
         db/db_log_iter_test.cc
         db/db_memtable_test.cc
@@ -851,6 +909,8 @@ if(WITH_TESTS)
         db/db_write_test.cc
         db/dbformat_test.cc
         db/deletefile_test.cc
+        db/error_handler_test.cc
+        db/obsolete_files_test.cc
         db/external_sst_file_basic_test.cc
         db/external_sst_file_test.cc
         db/fault_injection_test.cc
@@ -892,12 +952,14 @@ if(WITH_TESTS)
         table/cleanable_test.cc
         table/cuckoo_table_builder_test.cc
         table/cuckoo_table_reader_test.cc
+        table/data_block_hash_index_test.cc
         table/full_filter_block_test.cc
         table/merger_test.cc
         table/table_test.cc
         tools/ldb_cmd_test.cc
         tools/reduce_levels_test.cc
         tools/sst_dump_test.cc
+        tools/trace_analyzer_test.cc
         util/arena_test.cc
         util/auto_roll_logger_test.cc
         util/autovector_test.cc
@@ -912,6 +974,7 @@ if(WITH_TESTS)
         util/hash_test.cc
         util/heap_test.cc
         util/rate_limiter_test.cc
+        util/repeatable_thread_test.cc
         util/slice_transform_test.cc
         util/timer_queue_test.cc
         util/thread_list_test.cc
@@ -943,6 +1006,7 @@ if(WITH_TESTS)
         utilities/transactions/optimistic_transaction_test.cc
         utilities/transactions/transaction_test.cc
         utilities/transactions/write_prepared_transaction_test.cc
+        utilities/transactions/write_unprepared_transaction_test.cc
         utilities/ttl/ttl_test.cc
         utilities/write_batch_with_index/write_batch_with_index_test.cc
   )
@@ -953,6 +1017,7 @@ if(WITH_TESTS)
   set(BENCHMARKS
     cache/cache_bench.cc
     memtable/memtablerep_bench.cc
+    db/range_del_aggregator_bench.cc
     tools/db_bench.cc
     table/table_reader_bench.cc
     utilities/column_aware_encoding_exp.cc
@@ -1027,67 +1092,7 @@ if(WITH_TESTS)
   endforeach(sourcefile ${C_TEST_EXES})
 endif()
 
-option(WITH_TOOLS "build with tools" ON)
+option(WITH_TOOLS "build with tools" OFF)
 if(WITH_TOOLS)
   add_subdirectory(tools)
-endif()
-
-
-if(MSVC)
-  # Check for the presence of AVX and figure out the flags to use for it.
-  string (REPLACE "/arch:AVX2" ""     CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
-  string (REPLACE "/arch:AVX" ""     CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
-
-  if(ENABLE_AVX)
-    include(CheckCXXSourceRuns)
-    
-    # Check AVX
-    check_cxx_source_runs("
-      #include <immintrin.h>
-      int main()
-      {
-        __m256 a, b, c;
-        const float src[8] = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f };
-        float dst[8];
-        a = _mm256_loadu_ps( src );
-        b = _mm256_loadu_ps( src );
-        c = _mm256_add_ps( a, b );
-        _mm256_storeu_ps( dst, c );
-        for( int i = 0; i < 8; i++ ){
-          if( ( src[i] + src[i] ) != dst[i] ){
-            return -1;
-          }
-        }
-        return 0;
-      }"
-      HAVE_AVX_EXTENSIONS)
-
-    # Check AVX2
-    check_cxx_source_runs("
-      #include <immintrin.h>
-      int main()
-      {
-        __m256i a, b, c;
-        const int src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
-        int dst[8];
-        a =  _mm256_loadu_si256( (__m256i*)src );
-        b =  _mm256_loadu_si256( (__m256i*)src );
-        c = _mm256_add_epi32( a, b );
-        _mm256_storeu_si256( (__m256i*)dst, c );
-        for( int i = 0; i < 8; i++ ){
-          if( ( src[i] + src[i] ) != dst[i] ){
-            return -1;
-          }
-        }
-        return 0;
-      }"
-      HAVE_AVX2_EXTENSIONS)
-
-    # Set Flags
-    if(HAVE_AVX2_EXTENSIONS AND NOT MSVC_VERSION LESS 1800)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /arch:AVX2")
-    elseif(HAVE_AVX_EXTENSIONS  AND NOT MSVC_VERSION LESS 1600)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /arch:AVX")
-    endif()
-  endif()
 endif()

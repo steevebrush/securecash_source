@@ -39,17 +39,19 @@
 #include <stdexcept>
 #include <stdint.h>
 #include <stdlib.h>
+#include <rocksdb/slice.h>
 
 namespace rocksdb {
 
 class Arena;
 class Allocator;
 class LookupKey;
-class Slice;
 class SliceTransform;
 class Logger;
 
 typedef void* KeyHandle;
+
+extern Slice GetLengthPrefixedSlice(const char* data);
 
 class MemTableRep {
  public:
@@ -57,6 +59,14 @@ class MemTableRep {
   // concatenated with values.
   class KeyComparator {
    public:
+    typedef rocksdb::Slice DecodedType;
+
+    virtual DecodedType decode_key(const char* key) const {
+      // The format of key is frozen and can be terated as a part of the API
+      // contract. Refer to MemTable::Add for details.
+      return GetLengthPrefixedSlice(key);
+    }
+
     // Compare a and b. Return a negative value if a is less than b, 0 if they
     // are equal, and a positive value if a is greater than b
     virtual int operator()(const char* prefix_len_key1,
@@ -97,7 +107,7 @@ class MemTableRep {
   //
   // Currently only skip-list based memtable implement the interface. Other
   // implementations will fallback to Insert() by default.
-  virtual void InsertWithHint(KeyHandle handle, void** hint) {
+  virtual void InsertWithHint(KeyHandle handle, void** /*hint*/) {
     // Ignore the hint by default.
     Insert(handle);
   }
@@ -134,6 +144,14 @@ class MemTableRep {
   // or any writes done directly to entries accessed through the iterator.)
   virtual void MarkReadOnly() { }
 
+  // Notify this table rep that it has been flushed to stable storage.
+  // By default, does nothing.
+  //
+  // Invariant: MarkReadOnly() is called, before MarkFlushed().
+  // Note that this method if overridden, should not run for an extended period
+  // of time. Otherwise, RocksDB may be blocked.
+  virtual void MarkFlushed() { }
+
   // Look up key from the mem table, since the first key in the mem table whose
   // user_key matches the one given k, call the function callback_func(), with
   // callback_args directly forwarded as the first parameter, and the mem table
@@ -149,8 +167,8 @@ class MemTableRep {
   virtual void Get(const LookupKey& k, void* callback_args,
                    bool (*callback_func)(void* arg, const char* entry));
 
-  virtual uint64_t ApproximateNumEntries(const Slice& start_ikey,
-                                         const Slice& end_key) {
+  virtual uint64_t ApproximateNumEntries(const Slice& /*start_ikey*/,
+                                         const Slice& /*end_key*/) {
     return 0;
   }
 
@@ -346,7 +364,7 @@ extern MemTableRepFactory* NewHashLinkListRepFactory(
 
 // This factory creates a cuckoo-hashing based mem-table representation.
 // Cuckoo-hash is a closed-hash strategy, in which all key/value pairs
-// are stored in the bucket array itself intead of in some data structures
+// are stored in the bucket array itself instead of in some data structures
 // external to the bucket array.  In addition, each key in cuckoo hash
 // has a constant number of possible buckets in the bucket array.  These
 // two properties together makes cuckoo hash more memory efficient and

@@ -1,15 +1,25 @@
-cmake_minimum_required(VERSION 2.8.6)
+cmake_minimum_required(VERSION 3.5)
+project(Securecash VERSION 1.1.0)
 
-set(VERSION "0.1")
+# Enabling C++11
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-set(CMAKE_CONFIGURATION_TYPES Debug RelWithDebInfo Release CACHE TYPE INTERNAL)
-set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build, options are: Debug, Release, RelWithDebInfo")
-set(CMAKE_SKIP_INSTALL_RULES OFF)
-set(CMAKE_SKIP_PACKAGE_ALL_DEPENDENCY ON)
 set(CMAKE_SUPPRESS_REGENERATION ON)
-set(DO_TESTS ON CACHE STRING "Spend time making tests? Defaults to ON")
+set(CMAKE_SKIP_PACKAGE_ALL_DEPENDENCY ON)
+set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
+
 set(STATIC ON CACHE BOOL "Link libraries statically")
+set(CMAKE_CONFIGURATION_TYPES Debug RelWithDebInfo Release CACHE STRING INTERNAL)
+set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build, options are: Debug, Release, RelWithDebInfo")
+#set(CMAKE_SKIP_INSTALL_RULES OFF)
+set(DO_TESTS OFF CACHE STRING "Spend time making tests? Defaults to OFF")
+set(COMMIT_ID_IN_VERSION ON CACHE BOOL "Include git commit # in Version")
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" )
+    set(DO_TESTS ON CACHE STRING "Spend time making tests? Defaults to OFF")
+endif()
 
 set(ENABLE_AVX OFF CACHE STRING "Enable RocksDB AVX/AVX2 support detection? Defaults to OFF")
 set(ENABLE_LEAF_FRAME OFF CACHE STRING "Enable RocksDB OMIT_LEAF_FRAME_POINTER detection? Defaults to OFF")
@@ -30,7 +40,20 @@ endif()
 # copy CTestCustom.cmake to build dir to disable long running tests in 'make test'
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/CTestCustom.cmake ${CMAKE_CURRENT_BINARY_DIR})
 
-project(worktips)
+#get rid of "QT_QMAKE_EXECUTABLE not used by the project" in QtCreator
+set(ignoreMe "${QT_QMAKE_EXECUTABLE}")
+
+# Handle build types and set possible values of build type for cmake-gui
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  message(STATUS "Setting build type to default : '${DEFAULT_BUILD_TYPE}'")
+  set(CMAKE_BUILD_TYPE "${DEFAULT_BUILD_TYPE}" CACHE STRING "Type of build." FORCE)
+  set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release")
+endif()
+
+# Set version
+find_package(BuildVersion REQUIRED)
+# Threads
+find_package(Threads)
 
 include_directories(include src external "${CMAKE_CURRENT_BINARY_DIR}/version")
 if(APPLE)
@@ -71,7 +94,7 @@ else()
     set(ARCH_FLAG "-march=${ARCH}")
   endif()
   set(WARNINGS "-Wall -Wextra -Wpointer-arith -Wundef -Wvla -Wwrite-strings  -Wno-error=extra -Wno-error=unused-function -Wno-error=deprecated-declarations -Wno-error=sign-compare -Wno-error=strict-aliasing -Wno-error=type-limits -Wno-unused-parameter -Wno-error=unused-variable -Wno-error=undef -Wno-error=uninitialized -Wno-error=unused-result")
-  if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+  if(CMAKE_C_COMPILER_ID STREQUAL "Clang" OR CMAKE_C_COMPILER_ID STREQUAL "AppleClang")
     set(WARNINGS "${WARNINGS} -Wno-error=mismatched-tags -Wno-error=null-conversion -Wno-overloaded-shift-op-parentheses -Wno-error=shift-count-overflow -Wno-error=tautological-constant-out-of-range-compare -Wno-error=unused-private-field -Wno-error=unneeded-internal-declaration -Wno-error=unused-function -Wno-error=missing-braces")
   else()
     set(WARNINGS "${WARNINGS} -Wlogical-op -Wno-error=maybe-uninitialized -Wno-error=clobbered -Wno-error=unused-but-set-variable")
@@ -124,6 +147,7 @@ else()
   endif()
 endif()
 
+set(Boost_NO_BOOST_CMAKE ON)
 if(STATIC)
   set(Boost_USE_STATIC_LIBS ON)
   set(Boost_USE_STATIC_RUNTIME ON)
@@ -159,7 +183,7 @@ else()
   find_package(Git QUIET)
   if(Git_FOUND OR GIT_FOUND)
     message(STATUS "Found Git: ${GIT_EXECUTABLE}")
-    add_custom_target(version ALL "${CMAKE_COMMAND}" "-D" "VERSION=${VERSION}" "-D" "GIT=${GIT_EXECUTABLE}" "-D" "TO=${CMAKE_CURRENT_BINARY_DIR}/version/version.h" "-P" "${CMAKE_CURRENT_SOURCE_DIR}/src/version.cmake" WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+#    add_custom_target(version ALL "${CMAKE_COMMAND}" "-D" "VERSION=${VERSION}" "-D" "GIT=${GIT_EXECUTABLE}" "-D" "TO=${CMAKE_CURRENT_BINARY_DIR}/version/version.h" "-P" "${CMAKE_CURRENT_SOURCE_DIR}/src/version.cmake" WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   else()
     message(STATUS "WARNING: Git was not found!")
     set(VERSION "${VERSION}-unknown")
@@ -168,17 +192,26 @@ else()
   endif()
 endif()
 
+#---------#
+# Summary #
+#---------#
+message(STATUS " ")
+message(STATUS "========== building ${PROJECT_NAME} Core version : ${PROJECT_VERSION} build ${PROJECT_VERSION_TWEAK} ${CMAKE_BUILD_TYPE} =======")
+message(STATUS "Compiler : ${CMAKE_CXX_COMPILER_ID} version ${CMAKE_CXX_COMPILER_VERSION}")
+message(STATUS "Version : ${VERSION}")
+message(STATUS "Revision : ${COMMIT_ID}")
+message(STATUS "Arch : ${ARCH}")
+message(STATUS "Boost version : ${Boost_LIB_VERSION}")
+message(STATUS "Link libraries statically : ${STATIC}" )
+message(STATUS "Build tests : " ${DO_TESTS})
+message(STATUS "----------------------------------------------------------")
+
+message(STATUS "C Flags ${CMAKE_C_FLAGS_RELEASE}")
+message(STATUS "CXX Flags ${CMAKE_CXX_FLAGS_RELEASE}")
+
 add_subdirectory(external)
 add_subdirectory(src)
 
 if(DO_TESTS)
   add_subdirectory(tests)
-endif()
-
-## We need to setup the RocksDB build environment to match our system
-if(NOT MSVC)
-  execute_process(
-    COMMAND cmake ${CMAKE_CURRENT_SOURCE_DIR}/external/rocksdb -DWITH_GFLAGS=0 -B${PROJECT_BINARY_DIR}/rocksdb
-  )
-  set_directory_properties(PROPERTIES ADDITIONAL_MAKE_CLEAN_FILES "${PROJECT_BINARY_DIR}/rocksdb/librocksdb.a")
 endif()
